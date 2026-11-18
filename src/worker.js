@@ -24,6 +24,7 @@ async function router(request,env){
     return respond({teams:teams.n,games:games.results,ratings:ratings.results,lastSync:last.last,
       players:playerData?.[0].n??null,playerGameStats:playerData?.[1].n??null,
       playerSync:playerData?.[2].results??[],playerSchemaReady:!!hasPlayers,
+      upstreamConfigured:!!env.CBBD_API_KEY,
       bootstrap: await env.DB.prepare("SELECT cursor AS state,last_success_at AS completedAt,last_error AS error FROM sync_state WHERE source='cbbd-bootstrap-once-20261118' AND season=2027").first(),
       modelVersion:MODEL_VERSION,calibrated:false});
   }
