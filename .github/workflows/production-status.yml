@@ -1,0 +1,49 @@
+name: Matchup Lab production status
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/production-status.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Read deployed Cloudflare Worker status
+        shell: bash
+        run: |
+          node --input-type=module <<'JS'
+          const endpoint='https://matchup-lab-api.james-methvin74.workers.dev/api/status';
+          let payload;
+          for(let attempt=1;attempt<=6;attempt++){
+            try{
+              const response=await fetch(endpoint,{headers:{accept:'application/json'},signal:AbortSignal.timeout(15000)});
+              if(!response.ok)throw new Error('HTTP '+response.status);
+              payload=await response.json();
+              if(payload.playerSchemaReady!==true)throw new Error('Player migration is not active');
+              break;
+            }catch(error){
+              console.log('Production read attempt '+attempt+'/6:',String(error));
+              if(attempt===6)throw error;
+              await new Promise(resolve=>setTimeout(resolve,5000));
+            }
+          }
+          const report={
+            checkedAt:new Date().toISOString(),
+            teams:payload.teams,games:payload.games,
+            ratings:payload.ratings,players:payload.players,
+            playerGameStats:payload.playerGameStats,
+            playerSchemaReady:payload.playerSchemaReady,
+            bootstrap:payload.bootstrap??null,
+            playerSync:payload.playerSync??[]
+          };
+          console.log('MATCHUP_LAB_LIVE_STATUS '+JSON.stringify(report));
+          if(!Number.isInteger(payload.teams)||!Number.isInteger(payload.players)||!Array.isArray(payload.games))
+            throw new Error('Unexpected Matchup Lab status response');
+          JS
