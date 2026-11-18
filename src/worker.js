@@ -9,13 +9,22 @@ async function router(request,env){
   if(path==='/api/health'&&request.method==='GET')return respond({ok:true,app:'Matchup Lab',modelVersion:MODEL_VERSION});
   if(!env.DB)return bad('Database is not configured',503);
   if(path==='/api/status'&&request.method==='GET'){
-    const [teams,games,ratings,last]=await Promise.all([
+    const [teams,games,ratings,last,hasPlayers]=await Promise.all([
       env.DB.prepare('SELECT COUNT(*) AS n FROM teams WHERE di_status=1').first(),
       env.DB.prepare('SELECT season,COUNT(*) AS n FROM games GROUP BY season').all(),
       env.DB.prepare('SELECT season,COUNT(*) AS n FROM team_ratings GROUP BY season').all(),
-      env.DB.prepare('SELECT MAX(last_success_at) AS last FROM sync_state').first()
+      env.DB.prepare('SELECT MAX(last_success_at) AS last FROM sync_state').first(),
+      env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='player_game_stats'").first()
     ]);
-    return respond({teams:teams.n,games:games.results,ratings:ratings.results,lastSync:last.last,modelVersion:MODEL_VERSION,calibrated:false});
+    const playerData=hasPlayers?await Promise.all([
+      env.DB.prepare('SELECT COUNT(*) AS n FROM players').first(),
+      env.DB.prepare('SELECT COUNT(*) AS n FROM player_game_stats').first(),
+      env.DB.prepare("SELECT season, cursor, last_success_at AS lastSync FROM sync_state WHERE source='cbbd-players' ORDER BY season").all()
+    ]):null;
+    return respond({teams:teams.n,games:games.results,ratings:ratings.results,lastSync:last.last,
+      players:playerData?.[0].n??null,playerGameStats:playerData?.[1].n??null,
+      playerSync:playerData?.[2].results??[],playerSchemaReady:!!hasPlayers,
+      modelVersion:MODEL_VERSION,calibrated:false});
   }
   if(path==='/api/teams'&&request.method==='GET'){
     const season=validSeason(url.searchParams.get('season'));if(!season)return bad('Invalid season');

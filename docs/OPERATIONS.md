@@ -19,3 +19,12 @@ The Worker Cron is `0 12 * * *` (daily 12:00 UTC). Each tick fetches at most two
 ## Backtesting
 
 `src/backtest.js` exposes a date-cutoff walk-forward evaluator measuring Brier score, log loss, accuracy, calibration deciles and average absolute margin error. It excludes games with insufficient prior-season observations. It is not a claim of completed historical validation; connect to a held-out in-database historical game cohort before reporting calibration.
+
+## Player data pipeline (2026 and 2027)
+
+- **Prerequisite:** Apply `migrations/0002_player_coach_history.sql` to the dedicated `matchup-lab` D1 database using its Console. The Worker safely reports `playerSchemaReady: false` and skips player sync while the migration is absent. Never run it against LocalBleachersAR.
+- `GET /api/status` reports `players`, `playerGameStats`, `playerSync` cursors, and `playerSchemaReady`. Zero counts before the daily collection completes are expected.
+- After migration, the existing scheduled ingestion adds one **one-day** `/games/players` slice per season per run (two additional provider calls at most). Player game stats, player-to-team-season membership, stable provider IDs, and source metadata are upserted without overwriting historic affiliations. Player cursors are independent of team-game cursors.
+- Missing athlete IDs, unimported game references, unexpected shapes, overlarge windows, and API throttling fail closed without advancing the affected player cursor. Team ratings complete even if the optional player sync encounters an error; errors appear in cron logs. Correct a blocked cursor or smaller window through a reviewed code change, never by fabricating rows.
+- Historical catch-up intentionally advances one day per daily run to stay on free quotas; faster backfill requires explicit budgeting. `player_season_stats` and coach tenure tables are reserved for later verified-source ingestion and remain empty for now. No player-transfer/coaching adjustments are claimed by the current team-only prediction model.
+- API docs: CBBD `/games/players` and its nested `players` array with `athleteId`, `fieldGoals`, `rebounds`, `usage`, and ratings. Free API access quota is shared with CBBD football.

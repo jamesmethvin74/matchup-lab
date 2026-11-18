@@ -1,5 +1,6 @@
 // Bounded, idempotent CBBD -> D1 importer. Only scheduled or authenticated POSTs call this.
 import {buildRatings} from './model.js';
+import {preparePlayerRows,savePlayerRows} from './player-ingest.js';
 const BASE='https://api.collegebasketballdata.com';
 const ID=id=>`cbbd:${id}`;
 const str=x=>x==null?null:String(x);
@@ -7,14 +8,20 @@ const num=x=>x==null||x===''?null:Number.isFinite(Number(x))?Number(x):null;
 const date=x=>new Date(x).toISOString();
 const sevenDays=7*86400*1000;
 const sqlName=x=>{if(!/^[a-z_]+$/.test(x))throw new Error('Unsafe identifier');return x;};
+// JSON1 keeps statements under D1's 100-bound-parameter limit; bounded batches
+// keep free-tier subrequests and payload sizes predictable.
 function insertSql(db,table,columns,records,conflict,updateColumns=columns){
-  const placeholders=records.map(()=>`(${columns.map(()=>'?').join(',')})`).join(',');
-  const updates=updateColumns.filter(c=>!conflict.includes(c)).map(c=>`${c}=excluded.${c}`).join(',');
-  const stmt=`INSERT INTO ${sqlName(table)} (${columns.map(sqlName).join(',')}) VALUES ${placeholders} ON CONFLICT(${conflict.map(sqlName).join(',')}) DO ${updates?'UPDATE SET '+updates:'NOTHING'}`;
-  return db.prepare(stmt).bind(...records.flatMap(r=>columns.map(c=>r[c]??null)));
+  const updates=updateColumns.filter(c=>!conflict.includes(c)).map(c=>`${sqlName(c)}=excluded.${sqlName(c)}`).join(',');
+  const sql=`INSERT INTO ${sqlName(table)} (${columns.map(sqlName).join(',')})
+    SELECT ${columns.map(c=>`json_extract(value,'$.${sqlName(c)}')`).join(',')}
+    FROM json_each(?) WHERE 1=1 ON CONFLICT(${conflict.map(sqlName).join(',')}) DO ${updates?'UPDATE SET '+updates:'NOTHING'}`;
+  const payload=JSON.stringify(records.map(r=>Object.fromEntries(columns.map(c=>[c,r[c]??null]))));
+  return db.prepare(sql).bind(payload);
 }
 export async function bulkUpsert(db,table,columns,records,conflict,updateColumns=columns){
-  for(let i=0;i<records.length;i+=20){await db.batch([insertSql(db,table,columns,records.slice(i,i+20),conflict,updateColumns)]);}
+  const batch=[];
+  for(let i=0;i<records.length;i+=60)batch.push(insertSql(db,table,columns,records.slice(i,i+60),conflict,updateColumns));
+  for(let i=0;i<batch.length;i+=20)await db.batch(batch.slice(i,i+20));
 }
 async function api(key,path,params={},fetcher=fetch){
   if(!key)throw new Error('CBBD_API_KEY secret is missing');
@@ -85,6 +92,37 @@ async function syncSeason(env,season,fetcher){
   await bulkUpsert(env.DB,'sync_state',syncCols,[{source:'cbbd-window',season,cursor:next,last_success_at:new Date().toISOString(),last_error:null}],['source','season']);
   return {season,complete:false,games:games.length,boxes:stats.length,from:cursor,to:next};
 }
+// Player history has a separate daily cursor; it never advances until every validated
+// player in the bounded slice has been written. It skips cleanly until migration 0002.
+export async function syncPlayers(env,season,fetcher=fetch){
+  const table=await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='player_game_stats'").first();
+  if(!table)return {season,skipped:'Apply migration 0002_player_coach_history.sql'};
+  const state=await env.DB.prepare("SELECT cursor FROM sync_state WHERE source='cbbd-players' AND season=?").bind(season).first();
+  const start=season===2026?'2025-10-01T00:00:00.000Z':'2026-10-01T00:00:00.000Z';
+  const bound=season===2026?'2026-07-01T00:00:00.000Z':new Date().toISOString();
+  let cursor=state?.cursor??start;
+  if(Date.parse(cursor)>=Date.parse(bound)){
+    if(season===2026)return {season,complete:true,playerGames:0};
+    // Only corrections in the last week once historical catch-up is complete.
+    cursor=new Date(Date.now()-sevenDays).toISOString();
+  }
+  // One-day player slices protect D1 free daily write budgets and CBBD's 1,000-game limit.
+  const next=new Date(Math.min(Date.parse(cursor)+86400000,Date.parse(bound))).toISOString();
+  if(Date.parse(next)<=Date.parse(cursor))return {season,complete:true,playerGames:0};
+  const filter={season,startDateRange:cursor,endDateRange:next};
+  const boxes=await api(env.CBBD_API_KEY,'/games/players',filter,fetcher);
+  // Endpoint counts games, not player rows. Fail closed if it might have truncated.
+  const gamesFromSource=new Set(boxes.map(x=>x.gameId));
+  if(gamesFromSource.size>=1000)throw new Error('CBBD player game limit reached; reduce player window');
+  const found=await env.DB.prepare('SELECT id FROM games WHERE season=? AND start_date>=? AND start_date<? LIMIT 2000').bind(season,cursor,next).all();
+  const ids=new Set(found.results.map(g=>g.id));
+  const rows=preparePlayerRows(boxes,ids);
+  if(rows.stats.length>12000)throw new Error('Too many player records for a free-tier daily sync; shorten window');
+  const counts=await savePlayerRows(env.DB,rows);
+  await bulkUpsert(env.DB,'sync_state',syncCols,[{source:'cbbd-players',season,cursor:next,last_success_at:new Date().toISOString(),last_error:null}],['source','season']);
+  return {season,from:cursor,to:next,teamBoxes:rows.teamBoxes,...counts};
+}
+
 export async function rebuildRatings(db){
   const query=`SELECT g.season,g.start_date AS date,s.team_id AS teamId,s.opponent_id AS opponentId,
     s.points,s.possessions,op.points AS opponentPoints,s.fgm,s.fga,s.tpm,s.offensive_rebounds AS offRebounds,
@@ -105,5 +143,10 @@ export async function ingest(env,{fetcher=fetch}={}){
   const seasons=[];
   for(const s of [2026,2027])seasons.push(await syncSeason(env,s,fetcher));
   const ratings=await rebuildRatings(env.DB);
-  return {teamsUpdated:teams,seasons,...ratings,ingestedAt:new Date().toISOString()};
+  const playerSeasons=[];
+  for(const s of [2026,2027]){
+    try{playerSeasons.push(await syncPlayers(env,s,fetcher));}
+    catch(error){console.error('Matchup Lab player ingestion error',s,error);playerSeasons.push({season:s,error:String(error)});}
+  }
+  return {teamsUpdated:teams,seasons,playerSeasons,...ratings,ingestedAt:new Date().toISOString()};
 }
