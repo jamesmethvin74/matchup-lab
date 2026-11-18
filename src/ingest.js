@@ -66,13 +66,14 @@ async function catalog(env,fetcher){
   await bulkUpsert(env.DB,'sync_state',syncCols,[{source:'cbbd-teams',season:2027,cursor:'complete',last_success_at:new Date().toISOString(),last_error:null}],['source','season']);
   return rows.length;
 }
-async function syncSeason(env,season,fetcher){
-  const state=await env.DB.prepare("SELECT cursor FROM sync_state WHERE source='cbbd-window' AND season=?").bind(season).first();
-  const start=season===2026?'2025-10-01T00:00:00.000Z':'2026-10-01T00:00:00.000Z';
-  const bound=season===2026?'2026-07-01T00:00:00.000Z':new Date().toISOString();
+async function syncSeason(env,season,fetcher,override=null){
+  const source=override?.source??'cbbd-window';
+  const state=await env.DB.prepare('SELECT cursor FROM sync_state WHERE source=? AND season=?').bind(source,season).first();
+  const start=override?.start??(season===2026?'2025-10-01T00:00:00.000Z':'2026-10-01T00:00:00.000Z');
+  const bound=override?.end??(season===2026?'2026-07-01T00:00:00.000Z':new Date().toISOString());
   let cursor=state?.cursor??start;
   if(Date.parse(cursor)>=Date.parse(bound)){
-    if(season===2026)return {season,complete:true,games:0,boxes:0};
+    if(season===2026||override)return {season,complete:true,games:0,boxes:0};
     cursor=new Date(Date.now()-sevenDays).toISOString(); // rescan last week for corrections
   }
   const next=new Date(Math.min(Date.parse(cursor)+sevenDays,Date.parse(bound))).toISOString();
@@ -89,25 +90,26 @@ async function syncSeason(env,season,fetcher){
   await bulkUpsert(env.DB,'provider_ids',['provider','entity_type','provider_id','canonical_id'],validatedGames.map(g=>({provider:'cbbd',entity_type:'game',provider_id:g.provider_game_id,canonical_id:g.id})),['provider','entity_type','provider_id']);
   await bulkUpsert(env.DB,'games',gameCols,validatedGames,['provider','provider_game_id']);
   await bulkUpsert(env.DB,'game_team_stats',boxCols,stats,['game_id','team_id']);
-  await bulkUpsert(env.DB,'sync_state',syncCols,[{source:'cbbd-window',season,cursor:next,last_success_at:new Date().toISOString(),last_error:null}],['source','season']);
+  await bulkUpsert(env.DB,'sync_state',syncCols,[{source,season,cursor:next,last_success_at:new Date().toISOString(),last_error:null}],['source','season']);
   return {season,complete:false,games:games.length,boxes:stats.length,from:cursor,to:next};
 }
 // Player history has a separate daily cursor; it never advances until every validated
 // player in the bounded slice has been written. It skips cleanly until migration 0002.
-export async function syncPlayers(env,season,fetcher=fetch){
+export async function syncPlayers(env,season,fetcher=fetch,override=null){
   const table=await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='player_game_stats'").first();
   if(!table)return {season,skipped:'Apply migration 0002_player_coach_history.sql'};
-  const state=await env.DB.prepare("SELECT cursor FROM sync_state WHERE source='cbbd-players' AND season=?").bind(season).first();
-  const start=season===2026?'2025-10-01T00:00:00.000Z':'2026-10-01T00:00:00.000Z';
-  const bound=season===2026?'2026-07-01T00:00:00.000Z':new Date().toISOString();
+  const source=override?.source??'cbbd-players';
+  const state=await env.DB.prepare('SELECT cursor FROM sync_state WHERE source=? AND season=?').bind(source,season).first();
+  const start=override?.start??(season===2026?'2025-10-01T00:00:00.000Z':'2026-10-01T00:00:00.000Z');
+  const bound=override?.end??(season===2026?'2026-07-01T00:00:00.000Z':new Date().toISOString());
   let cursor=state?.cursor??start;
   if(Date.parse(cursor)>=Date.parse(bound)){
-    if(season===2026)return {season,complete:true,playerGames:0};
+    if(season===2026||override)return {season,complete:true,playerGames:0};
     // Only corrections in the last week once historical catch-up is complete.
     cursor=new Date(Date.now()-sevenDays).toISOString();
   }
   // One-day player slices protect D1 free daily write budgets and CBBD's 1,000-game limit.
-  const next=new Date(Math.min(Date.parse(cursor)+86400000,Date.parse(bound))).toISOString();
+  const next=new Date(Math.min(Date.parse(cursor)+(override?.spanDays??1)*86400000,Date.parse(bound))).toISOString();
   if(Date.parse(next)<=Date.parse(cursor))return {season,complete:true,playerGames:0};
   const filter={season,startDateRange:cursor,endDateRange:next};
   const boxes=await api(env.CBBD_API_KEY,'/games/players',filter,fetcher);
@@ -119,7 +121,7 @@ export async function syncPlayers(env,season,fetcher=fetch){
   const rows=preparePlayerRows(boxes,ids);
   if(rows.stats.length>12000)throw new Error('Too many player records for a free-tier daily sync; shorten window');
   const counts=await savePlayerRows(env.DB,rows);
-  await bulkUpsert(env.DB,'sync_state',syncCols,[{source:'cbbd-players',season,cursor:next,last_success_at:new Date().toISOString(),last_error:null}],['source','season']);
+  await bulkUpsert(env.DB,'sync_state',syncCols,[{source,season,cursor:next,last_success_at:new Date().toISOString(),last_error:null}],['source','season']);
   return {season,from:cursor,to:next,teamBoxes:rows.teamBoxes,...counts};
 }
 
@@ -136,6 +138,19 @@ export async function rebuildRatings(db){
   await bulkUpsert(db,'team_ratings',['sport_id','season','team_id','off_rating','def_rating','pace','efg','orb_rate','turnover_rate','sos','games_used','prior_games'],rows,['sport_id','season','team_id']);
   return {ratings:rows.length,completedGameRows:results.length};
 }
+// Authorized only by a one-time, server-side Cron Trigger; no public write endpoint.
+// Seeds the actual current-season window without fast-forwarding historical cursors.
+export async function bootstrapIngest(env,{fetcher=fetch}={}){
+  if(!env?.DB||!env?.CBBD_API_KEY)throw new Error('Missing D1 database binding or CBBD_API_KEY secret');
+  const end=new Date().toISOString();
+  const start=new Date(Date.parse(end)-4*86400000).toISOString();
+  const teamsUpdated=await catalog(env,fetcher);
+  const games=await syncSeason(env,2027,fetcher,{start,end,source:'cbbd-bootstrap-games'});
+  const ratings=await rebuildRatings(env.DB);
+  const players=await syncPlayers(env,2027,fetcher,{start,end,spanDays:4,source:'cbbd-bootstrap-players'});
+  return {teamsUpdated,games,players,ratings,windowStart:start,windowEnd:end};
+}
+
 export async function ingest(env,{fetcher=fetch}={}){
   if(!env?.DB)throw new Error('D1 DB binding required');
   if(!env?.CBBD_API_KEY)throw new Error('Set CBBD_API_KEY as a Cloudflare Worker secret');

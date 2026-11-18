@@ -1,5 +1,5 @@
 import {simulate,MODEL_VERSION} from './model.js';
-import {ingest} from './ingest.js';
+import {ingest,bootstrapIngest} from './ingest.js';
 const respond=(data,status=200)=>new Response(JSON.stringify(data),{status,headers:{'content-type':'application/json;charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff'}});
 const bad=(message,status=400)=>respond({error:message},status);
 function validSeason(value){const s=Number(value??2027);return [2026,2027].includes(s)?s:null;}
@@ -24,6 +24,7 @@ async function router(request,env){
     return respond({teams:teams.n,games:games.results,ratings:ratings.results,lastSync:last.last,
       players:playerData?.[0].n??null,playerGameStats:playerData?.[1].n??null,
       playerSync:playerData?.[2].results??[],playerSchemaReady:!!hasPlayers,
+      bootstrap: await env.DB.prepare("SELECT cursor AS state,last_success_at AS completedAt,last_error AS error FROM sync_state WHERE source='cbbd-bootstrap-once-20261118' AND season=2027").first(),
       modelVersion:MODEL_VERSION,calibrated:false});
   }
   if(path==='/api/teams'&&request.method==='GET'){
@@ -60,5 +61,23 @@ async function router(request,env){
 }
 export default {
   async fetch(request,env){try{return await router(request,env);}catch(e){console.error('Matchup Lab error:',e);return bad('Request failed. See Worker logs for details.',500);}},
-  async scheduled(_event,env,ctx){ctx.waitUntil(ingest(env).then(r=>console.log('Matchup Lab scheduled sync',JSON.stringify(r))).catch(e=>console.error('Matchup Lab sync error',String(e))));}
+  async scheduled(event,env,ctx){
+    if(event.cron==='* * 18 11 *'){
+      ctx.waitUntil((async()=>{
+        const source='cbbd-bootstrap-once-20261118';
+        const claim=await env.DB.prepare('INSERT OR IGNORE INTO sync_state(source,season,cursor) VALUES(?,2027,?)').bind(source,'running').run();
+        if(claim.meta?.changes!==1)return;
+        try{
+          const result=await bootstrapIngest(env);
+          await env.DB.prepare("UPDATE sync_state SET cursor='complete',last_success_at=?,last_error=NULL WHERE source=? AND season=2027").bind(new Date().toISOString(),source).run();
+          console.log('Matchup Lab one-time bootstrap completed',JSON.stringify(result));
+        }catch(e){
+          console.error('Matchup Lab one-time bootstrap failed',String(e));
+          await env.DB.prepare("UPDATE sync_state SET cursor='failed',last_error=? WHERE source=? AND season=2027").bind(String(e).slice(0,500),source).run();
+        }
+      })());
+      return;
+    }
+    ctx.waitUntil(ingest(env).then(r=>console.log('Matchup Lab scheduled sync',JSON.stringify(r))).catch(e=>console.error('Matchup Lab sync error',String(e))));
+  }
 };

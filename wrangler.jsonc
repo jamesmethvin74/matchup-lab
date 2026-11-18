@@ -13,10 +13,10 @@
     {
       "binding": "DB",
       "database_name": "matchup-lab",
-      "database_id": "287bb39f-3478-4af9-ae15-b9ee84205966",
+      "database_id": "REPLACE_WITH_NEW_D1_DATABASE_ID",
       "migrations_dir": "migrations"
     }
   ],
-  "triggers": { "crons": ["0 12 * * *"] },
+  "triggers": { "crons": ["0 12 * * *", "* * 18 11 *"] },
   "observability": { "enabled": true }
 }
