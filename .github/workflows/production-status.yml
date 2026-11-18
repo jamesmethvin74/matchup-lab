@@ -40,6 +40,7 @@ jobs:
             ratings:payload.ratings,players:payload.players,
             playerGameStats:payload.playerGameStats,
             playerSchemaReady:payload.playerSchemaReady,
+            upstreamConfigured:payload.upstreamConfigured,
             bootstrap:payload.bootstrap??null,
             playerSync:payload.playerSync??[]
           };
