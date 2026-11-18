@@ -13,7 +13,7 @@
     {
       "binding": "DB",
       "database_name": "matchup-lab",
-      "database_id": "REPLACE_WITH_NEW_D1_DATABASE_ID",
+      "database_id": "287bb39f-3478-4af9-ae15-b9ee84205966",
       "migrations_dir": "migrations"
     }
   ],
