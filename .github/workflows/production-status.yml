@@ -41,6 +41,8 @@ jobs:
             playerGameStats:payload.playerGameStats,
             playerSchemaReady:payload.playerSchemaReady,
             upstreamConfigured:payload.upstreamConfigured,
+            backfill:payload.backfill??null,
+            backfillProgress:payload.backfillProgress??[],
             bootstrap:payload.bootstrap??null,
             playerSync:payload.playerSync??[]
           };
