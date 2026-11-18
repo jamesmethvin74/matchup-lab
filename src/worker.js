@@ -65,7 +65,16 @@ export default {
     if(event.cron==='* * 18 11 *'){
       ctx.waitUntil((async()=>{
         const source='cbbd-bootstrap-once-20261118';
-        const claim=await env.DB.prepare('INSERT OR IGNORE INTO sync_state(source,season,cursor) VALUES(?,2027,?)').bind(source,'running').run();
+        // Preserve the one-shot guard. A missing key may be corrected in Worker
+        // settings without manual D1 edits; other failures remain blocked.
+        if(!env.CBBD_API_KEY){
+          console.error('Matchup Lab bootstrap paused: CBBD_API_KEY secret is not present on the deployed Worker');
+          return;
+        }
+        const claim=await env.DB.prepare(`INSERT INTO sync_state(source,season,cursor,last_error)
+          VALUES(?,2027,'running',NULL)
+          ON CONFLICT(source,season) DO UPDATE SET cursor='running',last_error=NULL
+          WHERE sync_state.cursor='failed' AND sync_state.last_error LIKE '%CBBD_API_KEY secret%'`).bind(source).run();
         if(claim.meta?.changes!==1)return;
         try{
           const result=await bootstrapIngest(env);
