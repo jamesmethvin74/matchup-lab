@@ -4,6 +4,54 @@ const respond=(data,status=200)=>new Response(JSON.stringify(data),{status,heade
 const bad=(message,status=400)=>respond({error:message},status);
 function validSeason(value){const s=Number(value??2027);return [2026,2027].includes(s)?s:null;}
 function hydrate(row){return {teamId:row.team_id,offRating:row.off_rating,defRating:row.def_rating,pace:row.pace,efg:row.efg,orbRate:row.orb_rate,turnoverRate:row.turnover_rate,sos:row.sos,gamesUsed:row.games_used,priorGames:row.prior_games,uncertainty:1/Math.sqrt(row.games_used+(row.prior_games?10:6))};}
+const BACKFILL_CRON='2-57/5 * * * *';
+const BACKFILL_SOURCE='cbbd-accelerated-backfill';
+const EIGHT_HOURS_MS=8*3600*1000;
+const CURSOR_SOURCES=new Set(['cbbd-window','cbbd-players']);
+async function accelerateBackfill(env){
+  if(!env?.DB || !env?.CBBD_API_KEY){
+    console.error('Accelerated backfill paused: production DB or CBBD_API_KEY is missing');
+    return;
+  }
+  // Do not burn daily quota when both seasons have caught up. 2026 must finish;
+  // 2027 must be within two days of live, after which normal daily sync takes over.
+  const {results}=await env.DB.prepare(
+    "SELECT source,season,cursor FROM sync_state WHERE source IN ('cbbd-window','cbbd-players') AND season IN (2026,2027)"
+  ).all();
+  const cursors=new Map(results.filter(x=>CURSOR_SOURCES.has(x.source)).map(x=>[x.source+':'+x.season,Date.parse(x.cursor)]));
+  const oldEnd=Date.parse('2026-07-01T00:00:00.000Z');
+  const currentEnd=Date.now()-2*86400000;
+  const allCaughtUp=[...CURSOR_SOURCES].every(source=>
+    (cursors.get(source+':2026')??0)>=oldEnd &&
+    (cursors.get(source+':2027')??0)>=currentEnd
+  );
+  if(allCaughtUp)return;
+  // One run at most every eight hours, even on errors or Worker retries.
+  const now=new Date().toISOString();
+  const cutoff=new Date(Date.now()-EIGHT_HOURS_MS).toISOString();
+  const claim=await env.DB.prepare(
+    "INSERT INTO sync_state(source,season,cursor,last_success_at,last_error) VALUES(?,2027,?,NULL,NULL) ON CONFLICT(source,season) DO UPDATE SET cursor=excluded.cursor,last_error=NULL WHERE sync_state.cursor<?"
+  ).bind(BACKFILL_SOURCE,now,cutoff).run();
+  if(claim.meta?.changes!==1)return;
+  try {
+    const result=await ingest(env);
+    const errors=result.playerSeasons.filter(entry=>entry.error);
+    if(errors.length)throw new Error('Player sync errors: '+errors.map(e=>e.season+' '+e.error).join('; ').slice(0,350));
+    await env.DB.prepare(
+      "UPDATE sync_state SET last_success_at=?,last_error=NULL WHERE source=? AND season=2027"
+    ).bind(new Date().toISOString(),BACKFILL_SOURCE).run();
+    console.log('Matchup Lab accelerated backfill',JSON.stringify({
+      teamsUpdated:result.teamsUpdated,seasons:result.seasons,playerSeasons:result.playerSeasons,
+      ratings:result.ratings
+    }));
+  }catch(error){
+    const message=String(error?.message||error).slice(0,450);
+    console.error('Matchup Lab accelerated backfill failure',message);
+    await env.DB.prepare(
+      "UPDATE sync_state SET last_error=? WHERE source=? AND season=2027"
+    ).bind(message,BACKFILL_SOURCE).run();
+  }
+}
 async function router(request,env){
   const url=new URL(request.url),path=url.pathname;
   if(path==='/api/health'&&request.method==='GET')return respond({ok:true,app:'Matchup Lab',modelVersion:MODEL_VERSION});
@@ -25,6 +73,8 @@ async function router(request,env){
       players:playerData?.[0].n??null,playerGameStats:playerData?.[1].n??null,
       playerSync:playerData?.[2].results??[],playerSchemaReady:!!hasPlayers,
       upstreamConfigured:!!env.CBBD_API_KEY,
+      backfillProgress: (await env.DB.prepare("SELECT source,season,cursor,last_success_at AS lastSync FROM sync_state WHERE source IN ('cbbd-window','cbbd-players') ORDER BY source,season").all()).results,
+      backfill: await env.DB.prepare("SELECT cursor AS lastAttemptAt,last_success_at AS lastSuccessAt,last_error AS lastError FROM sync_state WHERE source='cbbd-accelerated-backfill' AND season=2027").first(),
       bootstrap: await env.DB.prepare("SELECT cursor AS state,last_success_at AS completedAt,last_error AS error FROM sync_state WHERE source='cbbd-bootstrap-once-20261118' AND season=2027").first(),
       modelVersion:MODEL_VERSION,calibrated:false});
   }
@@ -63,6 +113,10 @@ async function router(request,env){
 export default {
   async fetch(request,env){try{return await router(request,env);}catch(e){console.error('Matchup Lab error:',e);return bad('Request failed. See Worker logs for details.',500);}},
   async scheduled(event,env,ctx){
+    if(event.cron===BACKFILL_CRON){
+      ctx.waitUntil(accelerateBackfill(env));
+      return;
+    }
     if(event.cron==='* * 18 11 *'){
       ctx.waitUntil((async()=>{
         const source='cbbd-bootstrap-once-20261118';
