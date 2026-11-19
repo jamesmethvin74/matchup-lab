@@ -13,18 +13,13 @@ async function accelerateBackfill(env){
     console.error('Accelerated backfill paused: production DB or CBBD_API_KEY is missing');
     return;
   }
-  // Do not burn daily quota when both seasons have caught up. 2026 must finish;
-  // 2027 must be within two days of live, after which normal daily sync takes over.
+  // Current-season only: no need to finish 2025-26 to use today's rosters.
   const {results}=await env.DB.prepare(
-    "SELECT source,season,cursor FROM sync_state WHERE source IN ('cbbd-window','cbbd-players') AND season IN (2026,2027)"
+    "SELECT source,season,cursor FROM sync_state WHERE source IN ('cbbd-window','cbbd-players') AND season=2027"
   ).all();
-  const cursors=new Map(results.filter(x=>CURSOR_SOURCES.has(x.source)).map(x=>[x.source+':'+x.season,Date.parse(x.cursor)]));
-  const oldEnd=Date.parse('2026-07-01T00:00:00.000Z');
-  const currentEnd=Date.now()-2*86400000;
-  const allCaughtUp=[...CURSOR_SOURCES].every(source=>
-    (cursors.get(source+':2026')??0)>=oldEnd &&
-    (cursors.get(source+':2027')??0)>=currentEnd
-  );
+  const cursors=new Map(results.filter(x=>CURSOR_SOURCES.has(x.source)).map(x=>[x.source,Date.parse(x.cursor)]));
+  const cutoff=Date.now()-86400000;
+  const allCaughtUp=[...CURSOR_SOURCES].every(source=>(cursors.get(source)??0)>=cutoff);
   if(allCaughtUp)return;
   // One run at most every eight hours, even on errors or Worker retries.
   const now=new Date().toISOString();

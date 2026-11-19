@@ -44,3 +44,11 @@ The Worker Cron is `0 12 * * *` (daily 12:00 UTC). Each tick fetches at most two
 - Cloudflare D1 Free includes 100,000 rows written/day, with index writes counted; CBBD free uses 1,000 calls/month shared with football. Actual quotas must be verified during live rollout before further acceleration.
 - From 2025-10-04, four days * 3 accelerated ticks plus the daily one-day tick is ~13 historical player-days per calendar day: ~20–22 days for the 2025–26 season to reach the July cutoff, assuming no provider/D1 interruptions. Actual calendar duration depends on source density, scheduled ticks, quotas and potential records over-limit.
 - Code-only rollout with no user action; Cloudflare Workers Builds deploys Git main. The read-only GitHub production-status smoke workflow monitors completion and cursor progress.
+
+## 2026-27 immediate focus (Nov 19, 2026)
+
+- The regular season began November 1, 2026 (NCAA). Immediate collections now target **season 2027 only**; last season is no longer a blocking dependency.
+- Existing season 2027 October cursors are automatically advanced to November 1 during the next bounded ingestion. Historical rows already stored are preserved.
+- Scheduled daily collection remains active. Accelerated import remains at most one run per eight hours, capturing a seven-day current-season team-game window and a four-day current-season player-game window per accelerated tick. No new secrets, DB migrations or manual action.
+- `2025-26` and coaching-history enrichments are deferred, not discarded. The current `coaches` schema remains empty until an independently verified 2026-27 roster-to-coach source is imported.
+- Real box-score coverage is not equivalent to a complete team roster; the 2026-27 roster source must be ingested separately for transfer-scenario tooling. Keep probabilities labeled uncalibrated.

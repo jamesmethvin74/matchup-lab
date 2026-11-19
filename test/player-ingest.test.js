@@ -27,10 +27,10 @@ test('one-day player sync advances independent cursor only after persisted sourc
  const sql=new DatabaseSync(':memory:');sql.exec(readFileSync(new URL('../migrations/0001_initial.sql',import.meta.url),'utf8'));sql.exec(readFileSync(new URL('../migrations/0002_player_coach_history.sql',import.meta.url),'utf8'));
  const db=dbAdapter(sql);
  await bulkUpsert(db,'teams',['id','sport_id','name','di_status'],[{id:'cbbd:1',sport_id:'basketball-m',name:'A',di_status:1},{id:'cbbd:2',sport_id:'basketball-m',name:'B',di_status:1}],['id']);
- await bulkUpsert(db,'games',['id','sport_id','season','provider','provider_game_id','start_date','home_team_id','away_team_id'],[{id:'cbbd:11',sport_id:'basketball-m',season:2027,provider:'cbbd',provider_game_id:'11',start_date:'2026-10-01T10:00:00Z',home_team_id:'cbbd:1',away_team_id:'cbbd:2'}],['provider','provider_game_id']);
+ await bulkUpsert(db,'games',['id','sport_id','season','provider','provider_game_id','start_date','home_team_id','away_team_id'],[{id:'cbbd:11',sport_id:'basketball-m',season:2027,provider:'cbbd',provider_game_id:'11',start_date:'2026-11-01T10:00:00Z',home_team_id:'cbbd:1',away_team_id:'cbbd:2'}],['provider','provider_game_id']);
  let requests=0;const fetcher=async url=>{requests++;assert.match(url,/\/games\/players\?/);return Response.json([{...box,season:2027}])};
  const first=await syncPlayers({DB:db,CBBD_API_KEY:'fixture-only'},2027,fetcher);
- assert.equal(first.playerGames,1);assert.equal(requests,1);assert.match(sql.prepare("SELECT cursor FROM sync_state WHERE source='cbbd-players' AND season=2027").get().cursor,/2026-10-02/);
+ assert.equal(first.playerGames,1);assert.equal(requests,1);assert.match(sql.prepare("SELECT cursor FROM sync_state WHERE source='cbbd-players' AND season=2027").get().cursor,/2026-11-02/);
  assert.equal(sql.prepare('SELECT count(*) n FROM player_game_stats').get().n,1);
 });
 test('four-day accelerator window is bounded and advances precisely four calendar days',async()=>{

@@ -7,6 +7,7 @@ const str=x=>x==null?null:String(x);
 const num=x=>x==null||x===''?null:Number.isFinite(Number(x))?Number(x):null;
 const date=x=>new Date(x).toISOString();
 const sevenDays=7*86400*1000;
+const CURRENT_SEASON_START='2026-11-01T00:00:00.000Z';
 const sqlName=x=>{if(!/^[a-z_]+$/.test(x))throw new Error('Unsafe identifier');return x;};
 // JSON1 keeps statements under D1's 100-bound-parameter limit; bounded batches
 // keep free-tier subrequests and payload sizes predictable.
@@ -72,6 +73,9 @@ async function syncSeason(env,season,fetcher,override=null){
   const start=override?.start??(season===2026?'2025-10-01T00:00:00.000Z':'2026-10-01T00:00:00.000Z');
   const bound=override?.end??(season===2026?'2026-07-01T00:00:00.000Z':new Date().toISOString());
   let cursor=state?.cursor??start;
+  // Prioritize 2026-27 regular season: Nov 1 was the verified season opener.
+  // Older 2027 preseason cursor positions are safely fast-forwarded.
+  if(season===2027 && Date.parse(cursor)<Date.parse(CURRENT_SEASON_START))cursor=CURRENT_SEASON_START;
   if(Date.parse(cursor)>=Date.parse(bound)){
     if(season===2026||override)return {season,complete:true,games:0,boxes:0};
     cursor=new Date(Date.now()-sevenDays).toISOString(); // rescan last week for corrections
@@ -103,6 +107,9 @@ export async function syncPlayers(env,season,fetcher=fetch,override=null){
   const start=override?.start??(season===2026?'2025-10-01T00:00:00.000Z':'2026-10-01T00:00:00.000Z');
   const bound=override?.end??(season===2026?'2026-07-01T00:00:00.000Z':new Date().toISOString());
   let cursor=state?.cursor??start;
+  // Prioritize 2026-27 regular season: Nov 1 was the verified season opener.
+  // Older 2027 preseason cursor positions are safely fast-forwarded.
+  if(season===2027 && Date.parse(cursor)<Date.parse(CURRENT_SEASON_START))cursor=CURRENT_SEASON_START;
   if(Date.parse(cursor)>=Date.parse(bound)){
     if(season===2026||override)return {season,complete:true,playerGames:0};
     // Only corrections in the last week once historical catch-up is complete.
@@ -157,10 +164,10 @@ export async function ingest(env,{fetcher=fetch,playerDays=1}={}){
   if(!env?.CBBD_API_KEY)throw new Error('Set CBBD_API_KEY as a Cloudflare Worker secret');
   const teams=await catalog(env,fetcher);
   const seasons=[];
-  for(const s of [2026,2027])seasons.push(await syncSeason(env,s,fetcher));
+  for(const s of [2027])seasons.push(await syncSeason(env,s,fetcher));
   const ratings=await rebuildRatings(env.DB);
   const playerSeasons=[];
-  for(const s of [2026,2027]){
+  for(const s of [2027]){
     try{playerSeasons.push(await syncPlayers(env,s,fetcher,playerDays===1?null:{spanDays:playerDays}));}
     catch(error){console.error('Matchup Lab player ingestion error',s,error);playerSeasons.push({season:s,error:String(error)});}
   }
