@@ -52,3 +52,9 @@ The Worker Cron is `0 12 * * *` (daily 12:00 UTC). Each tick fetches at most two
 - Scheduled daily collection remains active. Accelerated import remains at most one run per eight hours, capturing a seven-day current-season team-game window and a four-day current-season player-game window per accelerated tick. No new secrets, DB migrations or manual action.
 - `2025-26` and coaching-history enrichments are deferred, not discarded. The current `coaches` schema remains empty until an independently verified 2026-27 roster-to-coach source is imported.
 - Real box-score coverage is not equivalent to a complete team roster; the 2026-27 roster source must be ingested separately for transfer-scenario tooling. Keep probabilities labeled uncalibrated.
+
+## 2026-27 immediate kickoff
+
+- One-time guarded current-season collection is scheduled for November 19 using temporary `* * 19 11 *` UTC cron and `sync_state.source='cbbd-2027-immediate-once-20261119'`.
+- Uses only the documented CBBD key, ingests one seven-day game window and one four-day player window via existing idempotent APIs, with no previous-season work.
+- Records `complete` or `failed` with timestamp/error. Cron is idempotent and should be removed after confirmation. Public `/api/status.immediateCurrent` is read-only.

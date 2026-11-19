@@ -69,6 +69,7 @@ async function router(request,env){
       playerSync:playerData?.[2].results??[],playerSchemaReady:!!hasPlayers,
       upstreamConfigured:!!env.CBBD_API_KEY,
       backfillProgress: (await env.DB.prepare("SELECT source,season,cursor,last_success_at AS lastSync FROM sync_state WHERE source IN ('cbbd-window','cbbd-players') ORDER BY source,season").all()).results,
+      immediateCurrent: await env.DB.prepare("SELECT cursor AS state,last_success_at AS completedAt,last_error AS error FROM sync_state WHERE source='cbbd-2027-immediate-once-20261119' AND season=2027").first(),
       backfill: await env.DB.prepare("SELECT cursor AS lastAttemptAt,last_success_at AS lastSuccessAt,last_error AS lastError FROM sync_state WHERE source='cbbd-accelerated-backfill' AND season=2027").first(),
       bootstrap: await env.DB.prepare("SELECT cursor AS state,last_success_at AS completedAt,last_error AS error FROM sync_state WHERE source='cbbd-bootstrap-once-20261118' AND season=2027").first(),
       modelVersion:MODEL_VERSION,calibrated:false});
@@ -108,6 +109,25 @@ async function router(request,env){
 export default {
   async fetch(request,env){try{return await router(request,env);}catch(e){console.error('Matchup Lab error:',e);return bad('Request failed. See Worker logs for details.',500);}},
   async scheduled(event,env,ctx){
+    if(event.cron==='* * 19 11 *'){
+      ctx.waitUntil((async()=>{
+        const source='cbbd-2027-immediate-once-20261119';
+        if(!env?.DB||!env?.CBBD_API_KEY)return;
+        const claim=await env.DB.prepare("INSERT OR IGNORE INTO sync_state(source,season,cursor) VALUES(?,2027,'running')").bind(source).run();
+        if(claim.meta?.changes!==1)return;
+        try{
+          const result=await ingest(env,{playerDays:4});
+          const failures=result.playerSeasons.filter(x=>x.error);
+          if(failures.length)throw new Error('Player box sync: '+failures.map(x=>x.error).join('; ').slice(0,350));
+          await env.DB.prepare("UPDATE sync_state SET cursor='complete',last_success_at=?,last_error=NULL WHERE source=? AND season=2027").bind(new Date().toISOString(),source).run();
+          console.log('2026-27 immediate ingestion complete',JSON.stringify(result));
+        }catch(error){
+          console.error('2026-27 immediate ingestion failed',String(error));
+          await env.DB.prepare("UPDATE sync_state SET cursor='failed',last_error=? WHERE source=? AND season=2027").bind(String(error).slice(0,450),source).run();
+        }
+      })());
+      return;
+    }
     if(event.cron===BACKFILL_CRON){
       ctx.waitUntil(accelerateBackfill(env));
       return;
