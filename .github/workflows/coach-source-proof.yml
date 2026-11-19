@@ -30,6 +30,14 @@ jobs:
           console.log("COACH_PARSED_COUNT",records.length);
           console.log("COACH_ARKANSAS",JSON.stringify(records.find(r=>r.team==='Arkansas Razorbacks')));
           console.log("COACH_DUKE",JSON.stringify(records.find(r=>r.team==='Duke Blue Devils')));
+          const teamsResponse=await fetch('https://matchup-lab-api.james-methvin74.workers.dev/api/teams?season=2027', {signal:AbortSignal.timeout(15000)});
+          if(!teamsResponse.ok)throw new Error('Production team directory HTTP '+teamsResponse.status);
+          const listing=await teamsResponse.json();
+          const teams=listing.teams||[];
+          const normalize=s=>String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+          const names=new Set(teams.flatMap(t=>[normalize(t.name),normalize((t.school||'')+' '+(t.mascot||''))]));
+          console.log('COACH_TEAM_MATCHES',JSON.stringify({availableTeams:teams.length, exact:records.filter(r=>names.has(normalize(r.team))).length,
+            arkansas:teams.filter(t=>/arkansas razorbacks/i.test(t.name)),duke:teams.filter(t=>/duke blue devils/i.test(t.name))}));
           if(!records.some(r=>r.team==='Arkansas Razorbacks'&&r.coach==='John Calipari'))throw new Error('Arkansas coach source mismatch');
           const tables=[...html.matchAll(/<table\b[^>]*class="[^"]*wikitable[^"]*"[^>]*>/gi)];
           console.log("COACH_SOURCE_TABLES",tables.length);
