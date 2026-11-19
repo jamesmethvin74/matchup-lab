@@ -117,7 +117,7 @@ export default {
       ctx.waitUntil((async()=>{
         const source='cbbd-2027-immediate-once-20261119';
         if(!env?.DB||!env?.CBBD_API_KEY)return;
-        const claim=await env.DB.prepare("INSERT OR IGNORE INTO sync_state(source,season,cursor) VALUES(?,2027,'running')").bind(source).run();
+        const claim=await env.DB.prepare("INSERT INTO sync_state(source,season,cursor) VALUES(?,2027,'running') ON CONFLICT(source,season) DO UPDATE SET cursor='running',last_error=NULL WHERE sync_state.cursor='failed' AND sync_state.last_error LIKE '%Player box references unimported game%'").bind(source).run();
         if(claim.meta?.changes!==1)return;
         try{
           const result=await ingest(env,{playerDays:4});

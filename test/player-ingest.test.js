@@ -42,3 +42,15 @@ test('four-day accelerator window is bounded and advances precisely four calenda
  assert.equal(outcome.playerGames,0);
  assert.match(sql.prepare("SELECT cursor FROM sync_state WHERE source='cbbd-players' AND season=2026").get().cursor,/2025-10-05/);
 });
+
+test('player-only CBBD game becomes source-backed scoreless game, never an invented result',async()=>{
+ const sql=new DatabaseSync(':memory:');sql.exec(readFileSync(new URL('../migrations/0001_initial.sql',import.meta.url),'utf8'));sql.exec(readFileSync(new URL('../migrations/0002_player_coach_history.sql',import.meta.url),'utf8'));
+ const db=dbAdapter(sql);
+ const fixture={...box,startDate:'2026-11-01T14:00:00Z',isHome:true,team:'Arkansas',opponent:'Duke',neutralSite:true};
+ const fetcher=async url=>{assert.match(url,/\/games\/players\?/);return Response.json([fixture])};
+ const result=await syncPlayers({DB:db,CBBD_API_KEY:'fixture-only'},2027,fetcher);
+ assert.equal(result.sourceOnlyGames,1);assert.equal(result.playerGames,1);
+ const game=sql.prepare("SELECT id,status,home_points,away_points FROM games WHERE id='cbbd:11'").get();
+ assert.equal(game.status,'player-box-only');assert.equal(game.home_points,null);assert.equal(game.away_points,null);
+ assert.equal(sql.prepare('SELECT count(*) n FROM player_game_stats').get().n,1);
+});

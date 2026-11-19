@@ -99,6 +99,39 @@ async function syncSeason(env,season,fetcher,override=null){
 }
 // Player history has a separate daily cursor; it never advances until every validated
 // player in the bounded slice has been written. It skips cleanly until migration 0002.
+// Preserve genuine player records when CBBD's player-box feed includes a game absent
+// from its /games feed. Persist only supplied game identity and date, never scores.
+async function hydrateBoxOnlyGames(db,boxes,known){
+  const missing=new Map(),seedTeams=new Map();
+  for(const box of boxes){
+    const id=ID(box.gameId);
+    if(known.has(id))continue;
+    if(!Number.isSafeInteger(Number(box.gameId))||!Number.isSafeInteger(Number(box.teamId))||
+       !Number.isSafeInteger(Number(box.opponentId))||!box.startDate||
+       ![true,false].includes(box.isHome)||!box.team?.trim()||!box.opponent?.trim())
+       throw new Error('Player box game missing enough source metadata to create a scoreless game reference');
+    const home=box.isHome?box.teamId:box.opponentId;
+    const away=box.isHome?box.opponentId:box.teamId;
+    const game=normalizeGame({id:box.gameId,season:box.season,startDate:box.startDate,
+      homeTeamId:home,awayTeamId:away,neutralSite:box.neutralSite,
+      status:'player-box-only'});
+    if(missing.has(id) && (missing.get(id).home_team_id!==game.home_team_id||
+      missing.get(id).away_team_id!==game.away_team_id))
+      throw new Error('CBBD player box has conflicting home/away identity for game '+id);
+    missing.set(id,game);
+    for(const [teamId,teamName] of [[box.teamId,box.team],[box.opponentId,box.opponent]]){
+      const canonical=ID(teamId);
+      seedTeams.set(canonical,{id:canonical,sport_id:'basketball-m',name:teamName,school:teamName,
+        mascot:null,abbreviation:null,conference:null,di_status:0});
+    }
+  }
+  if(missing.size){
+    await bulkUpsert(db,'teams',teamCols,[...seedTeams.values()],['id'],[]);
+    await bulkUpsert(db,'games',gameCols,[...missing.values()],['provider','provider_game_id'],[]);
+    for(const id of missing.keys())known.add(id);
+  }
+  return missing.size;
+}
 export async function syncPlayers(env,season,fetcher=fetch,override=null){
   const table=await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='player_game_stats'").first();
   if(!table)return {season,skipped:'Apply migration 0002_player_coach_history.sql'};
@@ -125,11 +158,12 @@ export async function syncPlayers(env,season,fetcher=fetch,override=null){
   if(gamesFromSource.size>=1000)throw new Error('CBBD player game limit reached; reduce player window');
   const found=await env.DB.prepare('SELECT id FROM games WHERE season=? AND start_date>=? AND start_date<? LIMIT 2000').bind(season,cursor,next).all();
   const ids=new Set(found.results.map(g=>g.id));
+  const sourceOnlyGames=await hydrateBoxOnlyGames(env.DB,boxes,ids);
   const rows=preparePlayerRows(boxes,ids);
   if(rows.stats.length>12000)throw new Error('Too many player records for a free-tier daily sync; shorten window');
   const counts=await savePlayerRows(env.DB,rows);
   await bulkUpsert(env.DB,'sync_state',syncCols,[{source,season,cursor:next,last_success_at:new Date().toISOString(),last_error:null}],['source','season']);
-  return {season,from:cursor,to:next,teamBoxes:rows.teamBoxes,...counts};
+  return {season,from:cursor,to:next,teamBoxes:rows.teamBoxes,sourceOnlyGames,...counts};
 }
 
 export async function rebuildRatings(db){

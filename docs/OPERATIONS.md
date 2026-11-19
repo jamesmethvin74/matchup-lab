@@ -72,3 +72,9 @@ The Worker Cron is `0 12 * * *` (daily 12:00 UTC). Each tick fetches at most two
 - Each accelerated cron tick tries `syncCurrentCoaches()` after the current D-I directory sync, matching by exact team name/mascot or the unique longest school prefix. It refuses to write unless at least 250 unique school assignments map.
 - Coaches and 2027 head-coach team assignments persist to the existing tables; `GET /api/status` reports `coaches` and `coachSync`. No new migration or secret is required.
 - This is a source-traceable coaches directory, **not** a verified causal coaching-effect model. Never apply a coach bonus to the simulator without held-out validation and coach history.
+
+## Player-feed-only game identity repair (2026-11-19)
+
+- CBBD's `/games/players` can include game IDs absent from the `/games` feed. Instead of blocking the entire day, create a source-backed `games` identity row from the player box's actual `gameId`, `startDate`, `teamId`, `opponentId`, `isHome`, and neutral-site indicator.
+- Such rows carry `status='player-box-only'` with **NULL home and away scores**; they are excluded from completed-game team-rating calculations. Existing authoritative `/games` rows are never overwritten by these shells.
+- Parent teams are inserted only if missing, as non-D-I until the verified directory confirms membership. No fictitious player statistics, game scores or wins are created.
