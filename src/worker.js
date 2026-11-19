@@ -1,5 +1,6 @@
 import {simulate,MODEL_VERSION} from './model.js';
 import {ingest,bootstrapIngest,syncCurrentRosterBatch,syncCurrentDirectory} from './ingest.js';
+import {syncCurrentCoaches} from './coach-ingest.js';
 const respond=(data,status=200)=>new Response(JSON.stringify(data),{status,headers:{'content-type':'application/json;charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff'}});
 const bad=(message,status=400)=>respond({error:message},status);
 function validSeason(value){const s=Number(value??2027);return [2026,2027].includes(s)?s:null;}
@@ -68,6 +69,8 @@ async function router(request,env){
       players:playerData?.[0].n??null,playerGameStats:playerData?.[1].n??null,
       playerSync:playerData?.[2].results??[],playerSchemaReady:!!hasPlayers,
       upstreamConfigured:!!env.CBBD_API_KEY,
+      coaches: (await env.DB.prepare("SELECT COUNT(*) AS n FROM coach_team_seasons WHERE season=2027 AND role='Head Coach'").first()).n,
+      coachSync: await env.DB.prepare("SELECT cursor,last_success_at AS lastSync FROM sync_state WHERE source='wikipedia-coaches-2027' AND season=2027").first(),
       currentRoster: await env.DB.prepare("SELECT cursor,last_success_at AS lastSync,last_error AS error FROM sync_state WHERE source='cbbd-2027-roster' AND season=2027").first(),
       backfillProgress: (await env.DB.prepare("SELECT source,season,cursor,last_success_at AS lastSync FROM sync_state WHERE source IN ('cbbd-window','cbbd-players') ORDER BY source,season").all()).results,
       immediateCurrent: await env.DB.prepare("SELECT cursor AS state,last_success_at AS completedAt,last_error AS error FROM sync_state WHERE source='cbbd-2027-immediate-once-20261119' AND season=2027").first(),
@@ -133,6 +136,8 @@ export default {
       ctx.waitUntil((async()=>{
         try{await syncCurrentDirectory(env);}
         catch(error){console.error('2027 D-I directory sync failed',String(error));}
+        try{console.log('2027 coach import',JSON.stringify(await syncCurrentCoaches(env)));}
+        catch(error){console.error('2027 coach import error',String(error));}
         try{console.log('2027 roster collection',JSON.stringify(await syncCurrentRosterBatch(env)));}
         catch(error){console.error('2027 roster collection failed',String(error));}
         await accelerateBackfill(env);

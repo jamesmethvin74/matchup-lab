@@ -65,3 +65,10 @@ The Worker Cron is `0 12 * * *` (daily 12:00 UTC). Each tick fetches at most two
 - The accelerated cron separately ingests 20 verified D-I team rosters per tick from `/teams/roster?season=2027`, maintaining a resumable `cbbd-2027-roster` cursor; games and player box scores need not exist for membership to be recorded. This permits unplayed bench players to appear in future transfer experiments.
 - The roster cursor is visible in public `GET /api/status.currentRoster`. Roster ingest is stopped automatically on `complete`. If the source response is incomplete or reordered, review provider data before claiming completeness. All records retain provider IDs.
 - Head coaches require a separate 2026–27 source: no invented coach effects or unverified coach identities are imported here.
+
+## 2026-27 head coaches (source verified 2026-11-19)
+
+- Static factual catalog `src/coaches-2027-data.js` includes 365 head-coach listing rows extracted from the public Wikipedia 2026-27 current D-I coaches page through read-only GitHub CI. Source URL and provenance are retained; the coach listing is a secondary source, not official institutional verification.
+- Each accelerated cron tick tries `syncCurrentCoaches()` after the current D-I directory sync, matching by exact team name/mascot or the unique longest school prefix. It refuses to write unless at least 250 unique school assignments map.
+- Coaches and 2027 head-coach team assignments persist to the existing tables; `GET /api/status` reports `coaches` and `coachSync`. No new migration or secret is required.
+- This is a source-traceable coaches directory, **not** a verified causal coaching-effect model. Never apply a coach bonus to the simulator without held-out validation and coach history.
