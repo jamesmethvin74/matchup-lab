@@ -42,6 +42,10 @@ jobs:
             playerSchemaReady:payload.playerSchemaReady,
             upstreamConfigured:payload.upstreamConfigured,
             backfill:payload.backfill??null,
+            coaches:payload.coaches??null,
+            coachSync:payload.coachSync??null,
+            currentRoster:payload.currentRoster??null,
+            immediateCurrent:payload.immediateCurrent??null,
             backfillProgress:payload.backfillProgress??[],
             bootstrap:payload.bootstrap??null,
             playerSync:payload.playerSync??[]
