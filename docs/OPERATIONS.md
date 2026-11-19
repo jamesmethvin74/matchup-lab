@@ -58,3 +58,10 @@ The Worker Cron is `0 12 * * *` (daily 12:00 UTC). Each tick fetches at most two
 - One-time guarded current-season collection is scheduled for November 19 using temporary `* * 19 11 *` UTC cron and `sync_state.source='cbbd-2027-immediate-once-20261119'`.
 - Uses only the documented CBBD key, ingests one seven-day game window and one four-day player window via existing idempotent APIs, with no previous-season work.
 - Records `complete` or `failed` with timestamp/error. Cron is idempotent and should be removed after confirmation. Public `/api/status.immediateCurrent` is read-only.
+
+## Current D-I directory and roster ingestion (2026-11-19)
+
+- `ingest()` now calls CBBD's `/teams/directory?season=2027` once per week, validates 300–450 unique 2027 D-I teams, and marks exactly those teams `di_status=1` before simulation lookup. The generic /teams catalog no longer overwrites verified D-I status.
+- The accelerated cron separately ingests 20 verified D-I team rosters per tick from `/teams/roster?season=2027`, maintaining a resumable `cbbd-2027-roster` cursor; games and player box scores need not exist for membership to be recorded. This permits unplayed bench players to appear in future transfer experiments.
+- The roster cursor is visible in public `GET /api/status.currentRoster`. Roster ingest is stopped automatically on `complete`. If the source response is incomplete or reordered, review provider data before claiming completeness. All records retain provider IDs.
+- Head coaches require a separate 2026–27 source: no invented coach effects or unverified coach identities are imported here.

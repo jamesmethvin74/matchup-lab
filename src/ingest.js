@@ -60,9 +60,9 @@ async function catalog(env,fetcher){
   const state=await env.DB.prepare("SELECT last_success_at FROM sync_state WHERE source='cbbd-teams' AND season=2027").first();
   if(state?.last_success_at && Date.now()-Date.parse(state.last_success_at)<7*sevenDays/7)return 0;
   const teams=await api(env.CBBD_API_KEY,'/teams',{},fetcher);
-  const rows=teams.filter(t=>t.id!=null&&t.school).map(t=>({id:ID(t.id),sport_id:'basketball-m',name:t.displayName||t.school,school:t.school,mascot:t.mascot??null,abbreviation:t.abbreviation??null,conference:t.conference??null,di_status:1}));
+  const rows=teams.filter(t=>t.id!=null&&t.school).map(t=>({id:ID(t.id),sport_id:'basketball-m',name:t.displayName||t.school,school:t.school,mascot:t.mascot??null,abbreviation:t.abbreviation??null,conference:t.conference??null,di_status:0}));
   if(rows.length<100)throw new Error('Team catalog unexpectedly small; refusing to mark team IDs');
-  await bulkUpsert(env.DB,'teams',teamCols,rows,['id'],['name','school','mascot','abbreviation','conference','di_status']);
+  await bulkUpsert(env.DB,'teams',teamCols,rows,['id'],['name','school','mascot','abbreviation','conference']);
   await bulkUpsert(env.DB,'provider_ids',['provider','entity_type','provider_id','canonical_id'],rows.map(r=>({provider:'cbbd',entity_type:'team',provider_id:r.id.slice(5),canonical_id:r.id})),['provider','entity_type','provider_id']);
   await bulkUpsert(env.DB,'sync_state',syncCols,[{source:'cbbd-teams',season:2027,cursor:'complete',last_success_at:new Date().toISOString(),last_error:null}],['source','season']);
   return rows.length;
@@ -158,11 +158,87 @@ export async function bootstrapIngest(env,{fetcher=fetch}={}){
   return {teamsUpdated,games,players,ratings,windowStart:start,windowEnd:end};
 }
 
+// Source-traceable 2026-27 D-I membership and roster snapshots.
+// Roster entries do not require box-score appearances.
+async function cbbdObject(env,path,params,fetcher){
+  const url=new URL(path,BASE);
+  for(const [key,value] of Object.entries(params))url.searchParams.set(key,String(value));
+  const response=await fetcher(url.toString(),{headers:{authorization:`Bearer ${env.CBBD_API_KEY}`,accept:'application/json'}});
+  if(!response.ok)throw new Error(`CBBD ${path} returned ${response.status}`);
+  return response.json();
+}
+export async function syncCurrentDirectory(env,fetcher=fetch){
+  if(!env.CBBD_API_KEY)throw new Error('Missing CBBD_API_KEY');
+  const source='cbbd-di-directory';
+  const previous=await env.DB.prepare('SELECT last_success_at FROM sync_state WHERE source=? AND season=2027').bind(source).first();
+  if(previous?.last_success_at&&Date.now()-Date.parse(previous.last_success_at)<7*86400000)return {skipped:'Directory is fresh'};
+  const data=await cbbdObject(env,'/teams/directory',{season:2027},fetcher);
+  const directory=data?.teams;
+  if(!Array.isArray(directory)||directory.length<300||directory.length>450||Number(data.season)!==2027)
+    throw new Error('CBBD 2027 D-I directory failed strict completeness validation');
+  const ids=new Set();
+  const rows=[];
+  for(const team of directory){
+    if(!Number.isSafeInteger(Number(team.id))||Number(team.id)<=0||!team.school?.trim())throw new Error('Invalid D-I directory team');
+    const id=ID(team.id);
+    if(ids.has(id))throw new Error('Duplicate D-I directory team ID');
+    ids.add(id);
+    rows.push({id,sport_id:'basketball-m',name:team.displayName||team.school,school:team.school,mascot:team.mascot??null,
+      abbreviation:team.abbreviation??null,di_status:1});
+  }
+  // Validate the entire source before modifying membership flags. No fake D-I status.
+  await env.DB.prepare("UPDATE teams SET di_status=0 WHERE sport_id='basketball-m'").run();
+  await bulkUpsert(env.DB,'teams',['id','sport_id','name','school','mascot','abbreviation','di_status'],rows,['id'],
+    ['name','school','mascot','abbreviation','di_status']);
+  await bulkUpsert(env.DB,'sync_state',syncCols,[{source,season:2027,cursor:'complete',last_success_at:new Date().toISOString(),last_error:null}],['source','season']);
+  return {diTeams:rows.length};
+}
+export async function syncCurrentRosterBatch(env,fetcher=fetch){
+  if(!env?.DB||!env?.CBBD_API_KEY)throw new Error('2027 roster importer lacks D1 or CBBD key');
+  const directory=await env.DB.prepare("SELECT cursor FROM sync_state WHERE source='cbbd-di-directory' AND season=2027").first();
+  if(directory?.cursor!=='complete')return {skipped:'2027 D-I directory not yet loaded'};
+  const source='cbbd-2027-roster';
+  const state=await env.DB.prepare('SELECT cursor FROM sync_state WHERE source=? AND season=2027').bind(source).first();
+  if(state?.cursor==='complete')return {complete:true};
+  const offset=state?.cursor?Number(state.cursor):0;
+  if(!Number.isSafeInteger(offset)||offset<0)throw new Error('Invalid roster cursor');
+  const roster=await api(env.CBBD_API_KEY,'/teams/roster',{season:2027},fetcher);
+  const allowed=await env.DB.prepare("SELECT id FROM teams WHERE sport_id='basketball-m' AND di_status=1").all();
+  const teamIds=new Set(allowed.results.map(r=>r.id));
+  const eligible=roster.filter(r=>teamIds.has(ID(r.teamId))&&Number(r.season)===2027)
+    .sort((a,b)=>Number(a.teamId)-Number(b.teamId));
+  const batch=eligible.slice(offset,offset+20);
+  const players=new Map(),memberships=new Map();
+  for(const entry of batch){
+    if(!Array.isArray(entry.players))throw new Error('Invalid CBBD roster players array');
+    for(const athlete of entry.players){
+      if(!Number.isSafeInteger(Number(athlete.id))||Number(athlete.id)<=0||!athlete.name?.trim())continue;
+      const id=ID(athlete.id),team=ID(entry.teamId);
+      players.set(id,{id,sport_id:'basketball-m',full_name:athlete.name.trim(),source:'cbbd',source_player_id:String(athlete.id),
+        first_name:athlete.firstName??null,last_name:athlete.lastName??null});
+      memberships.set(id+'|'+team,{player_id:id,team_id:team,season:2027,position:athlete.position??null,jersey:athlete.jersey??null,source:'cbbd'});
+    }
+  }
+  const values=[...players.values()],affiliations=[...memberships.values()];
+  await bulkUpsert(env.DB,'players',['id','sport_id','full_name','source','source_player_id','first_name','last_name'],values,['id'],
+    ['full_name','first_name','last_name']);
+  await bulkUpsert(env.DB,'provider_ids',['provider','entity_type','provider_id','canonical_id'],
+    values.map(p=>({provider:'cbbd',entity_type:'player',provider_id:p.source_player_id,canonical_id:p.id})),
+    ['provider','entity_type','provider_id']);
+  await bulkUpsert(env.DB,'player_team_seasons',['player_id','team_id','season','position','jersey','source'],
+    affiliations,['player_id','team_id','season'],['position','jersey','source']);
+  const completed=offset+batch.length>=eligible.length;
+  await bulkUpsert(env.DB,'sync_state',syncCols,[{source,season:2027,cursor:completed?'complete':String(offset+batch.length),
+    last_success_at:new Date().toISOString(),last_error:null}],['source','season']);
+  return {teamsProcessed:batch.length,totalTeams:eligible.length,players:values.length,offset:offset+batch.length,complete:completed};
+}
+
 export async function ingest(env,{fetcher=fetch,playerDays=1}={}){
   if(!Number.isInteger(playerDays)||playerDays<1||playerDays>4)throw new Error('Player ingest window must be 1–4 days');
   if(!env?.DB)throw new Error('D1 DB binding required');
   if(!env?.CBBD_API_KEY)throw new Error('Set CBBD_API_KEY as a Cloudflare Worker secret');
   const teams=await catalog(env,fetcher);
+  const directory=await syncCurrentDirectory(env,fetcher);
   const seasons=[];
   for(const s of [2027])seasons.push(await syncSeason(env,s,fetcher));
   const ratings=await rebuildRatings(env.DB);
@@ -171,5 +247,5 @@ export async function ingest(env,{fetcher=fetch,playerDays=1}={}){
     try{playerSeasons.push(await syncPlayers(env,s,fetcher,playerDays===1?null:{spanDays:playerDays}));}
     catch(error){console.error('Matchup Lab player ingestion error',s,error);playerSeasons.push({season:s,error:String(error)});}
   }
-  return {teamsUpdated:teams,seasons,playerSeasons,...ratings,ingestedAt:new Date().toISOString()};
+  return {teamsUpdated:teams,directory,seasons,playerSeasons,...ratings,ingestedAt:new Date().toISOString()};
 }
