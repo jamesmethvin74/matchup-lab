@@ -28,6 +28,7 @@ jobs:
           console.log("COACH_SOURCE_BYTES",html.length);
           const records=parsePublishedCoaches(html);
           console.log("COACH_PARSED_COUNT",records.length);
+          console.log('COACH_SNAPSHOT_JSON '+JSON.stringify(records));
           console.log("COACH_ARKANSAS",JSON.stringify(records.find(r=>r.team==='Arkansas Razorbacks')));
           console.log("COACH_DUKE",JSON.stringify(records.find(r=>r.team==='Duke Blue Devils')));
           const teamsResponse=await fetch('https://matchup-lab-api.james-methvin74.workers.dev/api/teams?season=2027', {signal:AbortSignal.timeout(15000)});
