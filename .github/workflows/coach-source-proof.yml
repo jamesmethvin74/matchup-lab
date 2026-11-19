@@ -14,16 +14,23 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
+      - uses: actions/checkout@v4
       - name: Inspect current-season published head-coach table
         shell: bash
         run: |
           node --input-type=module <<'JS'
+          import {parsePublishedCoaches} from './src/coach-ingest.js';
           const url="https://en.wikipedia.org/wiki/List_of_current_NCAA_Division_I_men%27s_basketball_coaches";
           const response=await fetch(url,{headers:{"user-agent":"MatchupLabSourceAudit/0.1 (public statistics, no personal data)",accept:"text/html"},signal:AbortSignal.timeout(20000)});
           console.log("COACH_SOURCE_HTTP",response.status);
           if(!response.ok)throw new Error("Source HTTP "+response.status);
           const html=await response.text();
           console.log("COACH_SOURCE_BYTES",html.length);
+          const records=parsePublishedCoaches(html);
+          console.log("COACH_PARSED_COUNT",records.length);
+          console.log("COACH_ARKANSAS",JSON.stringify(records.find(r=>r.team==='Arkansas Razorbacks')));
+          console.log("COACH_DUKE",JSON.stringify(records.find(r=>r.team==='Duke Blue Devils')));
+          if(!records.some(r=>r.team==='Arkansas Razorbacks'&&r.coach==='John Calipari'))throw new Error('Arkansas coach source mismatch');
           const tables=[...html.matchAll(/<table\b[^>]*class="[^"]*wikitable[^"]*"[^>]*>/gi)];
           console.log("COACH_SOURCE_TABLES",tables.length);
           const start=html.indexOf("<table",html.indexOf("List of current NCAA"));
