@@ -36,3 +36,11 @@ The Worker Cron is `0 12 * * *` (daily 12:00 UTC). Each tick fetches at most two
 - D1 `sync_state` with source `cbbd-accelerated-backfill` records last attempt timestamp, last success and last error; `/api/status` now exposes `backfill` and `backfillProgress` source cursors. No secrets exposed.
 - Automatically pauses extra imports once both seasons' regular game and player cursors are caught up. The 5-minute gate/check trigger should be removed via a later GitHub commit after verified catch-up to avoid unnecessary invocations.
 - Source cursor season 2026 ends 2026-07-01. Season 2027 catches up to within two days of the present; normal daily import continues with historical corrections. The initial one-time four-day bootstrap is independent and does not advance the regular cursors.
+
+## Four-day bulk player backfill (2026-11-19)
+
+- Accelerated six-hour game windows remain **seven days** each season; player windows expand to **four days** on accelerated runs (normal daily worker remains one-day, including corrections).
+- The accelerated throttle remains 8h, at most 3 accelerated runs/day plus the normal daily job; never launch an unbounded one-shot ingestion or overwrite the historical cursor. Every batch is idempotent and resumable in source-specific D1 sync_state.
+- Cloudflare D1 Free includes 100,000 rows written/day, with index writes counted; CBBD free uses 1,000 calls/month shared with football. Actual quotas must be verified during live rollout before further acceleration.
+- From 2025-10-04, four days * 3 accelerated ticks plus the daily one-day tick is ~13 historical player-days per calendar day: ~20–22 days for the 2025–26 season to reach the July cutoff, assuming no provider/D1 interruptions. Actual calendar duration depends on source density, scheduled ticks, quotas and potential records over-limit.
+- Code-only rollout with no user action; Cloudflare Workers Builds deploys Git main. The read-only GitHub production-status smoke workflow monitors completion and cursor progress.

@@ -33,3 +33,12 @@ test('one-day player sync advances independent cursor only after persisted sourc
  assert.equal(first.playerGames,1);assert.equal(requests,1);assert.match(sql.prepare("SELECT cursor FROM sync_state WHERE source='cbbd-players' AND season=2027").get().cursor,/2026-10-02/);
  assert.equal(sql.prepare('SELECT count(*) n FROM player_game_stats').get().n,1);
 });
+test('four-day accelerator window is bounded and advances precisely four calendar days',async()=>{
+ const sql=new DatabaseSync(':memory:');sql.exec(readFileSync(new URL('../migrations/0001_initial.sql',import.meta.url),'utf8'));sql.exec(readFileSync(new URL('../migrations/0002_player_coach_history.sql',import.meta.url),'utf8'));
+ const db=dbAdapter(sql);
+ const fetcher=async url=>{assert.match(url,/\/games\/players\?/);assert.match(url,/endDateRange=2025-10-05/);return Response.json([])};
+ const outcome=await syncPlayers({DB:db,CBBD_API_KEY:'fixture-only'},2026,fetcher,{spanDays:4});
+ assert.match(outcome.to,/2025-10-05/);
+ assert.equal(outcome.playerGames,0);
+ assert.match(sql.prepare("SELECT cursor FROM sync_state WHERE source='cbbd-players' AND season=2026").get().cursor,/2025-10-05/);
+});

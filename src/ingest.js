@@ -151,7 +151,8 @@ export async function bootstrapIngest(env,{fetcher=fetch}={}){
   return {teamsUpdated,games,players,ratings,windowStart:start,windowEnd:end};
 }
 
-export async function ingest(env,{fetcher=fetch}={}){
+export async function ingest(env,{fetcher=fetch,playerDays=1}={}){
+  if(!Number.isInteger(playerDays)||playerDays<1||playerDays>4)throw new Error('Player ingest window must be 1–4 days');
   if(!env?.DB)throw new Error('D1 DB binding required');
   if(!env?.CBBD_API_KEY)throw new Error('Set CBBD_API_KEY as a Cloudflare Worker secret');
   const teams=await catalog(env,fetcher);
@@ -160,7 +161,7 @@ export async function ingest(env,{fetcher=fetch}={}){
   const ratings=await rebuildRatings(env.DB);
   const playerSeasons=[];
   for(const s of [2026,2027]){
-    try{playerSeasons.push(await syncPlayers(env,s,fetcher));}
+    try{playerSeasons.push(await syncPlayers(env,s,fetcher,playerDays===1?null:{spanDays:playerDays}));}
     catch(error){console.error('Matchup Lab player ingestion error',s,error);playerSeasons.push({season:s,error:String(error)});}
   }
   return {teamsUpdated:teams,seasons,playerSeasons,...ratings,ingestedAt:new Date().toISOString()};

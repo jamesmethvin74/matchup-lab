@@ -34,7 +34,7 @@ async function accelerateBackfill(env){
   ).bind(BACKFILL_SOURCE,now,cutoff).run();
   if(claim.meta?.changes!==1)return;
   try {
-    const result=await ingest(env);
+    const result=await ingest(env,{playerDays:4});
     const errors=result.playerSeasons.filter(entry=>entry.error);
     if(errors.length)throw new Error('Player sync errors: '+errors.map(e=>e.season+' '+e.error).join('; ').slice(0,350));
     await env.DB.prepare(
