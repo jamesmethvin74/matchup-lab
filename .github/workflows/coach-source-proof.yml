@@ -1,0 +1,33 @@
+name: Current NCAA coach source proof
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/coach-source-proof.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Inspect current-season published head-coach table
+        shell: bash
+        run: |
+          node --input-type=module <<'JS'
+          const url="https://en.wikipedia.org/wiki/List_of_current_NCAA_Division_I_men%27s_basketball_coaches";
+          const response=await fetch(url,{headers:{"user-agent":"MatchupLabSourceAudit/0.1 (public statistics, no personal data)",accept:"text/html"},signal:AbortSignal.timeout(20000)});
+          console.log("COACH_SOURCE_HTTP",response.status);
+          if(!response.ok)throw new Error("Source HTTP "+response.status);
+          const html=await response.text();
+          console.log("COACH_SOURCE_BYTES",html.length);
+          const tables=[...html.matchAll(/<table\b[^>]*class="[^"]*wikitable[^"]*"[^>]*>/gi)];
+          console.log("COACH_SOURCE_TABLES",tables.length);
+          const start=html.indexOf("<table",html.indexOf("List of current NCAA"));
+          const anchor=html.indexOf("Arkansas Razorbacks",start>=0?start:0);
+          console.log("COACH_SOURCE_ARKANSAS_ROW",html.slice(Math.max(0,anchor-500),anchor+1200).replace(/\s+/g," ").slice(0,1700));
+          if(!html.includes("John Calipari")||!html.includes("Arkansas Razorbacks"))throw new Error("Expected current Arkansas coach listing missing");
+          JS
