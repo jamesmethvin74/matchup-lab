@@ -18,8 +18,8 @@ async function accelerateBackfill(env){
     "SELECT source,season,cursor FROM sync_state WHERE source IN ('cbbd-window','cbbd-players') AND season=2027"
   ).all();
   const cursors=new Map(results.filter(x=>CURSOR_SOURCES.has(x.source)).map(x=>[x.source,Date.parse(x.cursor)]));
-  const cutoff=Date.now()-86400000;
-  const allCaughtUp=[...CURSOR_SOURCES].every(source=>(cursors.get(source)??0)>=cutoff);
+  const currentDataCutoff=Date.now()-86400000;
+  const allCaughtUp=[...CURSOR_SOURCES].every(source=>(cursors.get(source)??0)>=currentDataCutoff);
   if(allCaughtUp)return;
   // One run at most every eight hours, even on errors or Worker retries.
   const now=new Date().toISOString();
