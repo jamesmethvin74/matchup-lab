@@ -1,5 +1,5 @@
 import {simulate,MODEL_VERSION} from './model.js';
-import {ingest,bootstrapIngest,syncCurrentRosterBatch} from './ingest.js';
+import {ingest,bootstrapIngest,syncCurrentRosterBatch,syncCurrentDirectory} from './ingest.js';
 const respond=(data,status=200)=>new Response(JSON.stringify(data),{status,headers:{'content-type':'application/json;charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff'}});
 const bad=(message,status=400)=>respond({error:message},status);
 function validSeason(value){const s=Number(value??2027);return [2026,2027].includes(s)?s:null;}
@@ -131,6 +131,8 @@ export default {
     }
     if(event.cron===BACKFILL_CRON){
       ctx.waitUntil((async()=>{
+        try{await syncCurrentDirectory(env);}
+        catch(error){console.error('2027 D-I directory sync failed',String(error));}
         try{console.log('2027 roster collection',JSON.stringify(await syncCurrentRosterBatch(env)));}
         catch(error){console.error('2027 roster collection failed',String(error));}
         await accelerateBackfill(env);
